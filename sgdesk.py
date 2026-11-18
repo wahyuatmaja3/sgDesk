@@ -12,10 +12,13 @@ import threading
 import time
 import webbrowser
 
+import pyperclip
 import uvicorn
 
 from app.config import CONFIG_DIR, SgDeskConfig
+from app.elevation import is_admin, request_self_elevation, wait_for_pid_exit
 from app.server import create_app
+from app.tray import SystemTrayIcon
 
 
 def _ensure_stdio() -> None:
@@ -91,7 +94,12 @@ def main() -> None:
         help="Run as Central Relay Server (clears outbound relay URL)",
     )
     parser.add_argument("--no-browser", action="store_true", help="Run headless without opening UI")
+    parser.add_argument("--no-tray", action="store_true", help="Disable system tray icon")
+    parser.add_argument("--wait-pid", type=int, default=0, help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    if args.wait_pid:
+        wait_for_pid_exit(args.wait_pid, timeout=6.0)
 
     cfg = SgDeskConfig.load()
     if args.port:
@@ -119,11 +127,43 @@ def main() -> None:
     print(f"  Relay URL    : {cfg.relay_url or '(Relay Server Mode)'}")
     print("=" * 54)
 
+    server_holder: dict[str, uvicorn.Server | None] = {"server": None}
+
+    def request_shutdown() -> None:
+        srv = server_holder.get("server")
+        if srv is not None:
+            srv.should_exit = True
+
+    tray: SystemTrayIcon | None = None
+    if not args.no_tray and not args.no_browser:
+        def _tray_elevate() -> None:
+            if request_self_elevation(sys.argv[1:]):
+                request_shutdown()
+
+        tray = SystemTrayIcon(
+            desk_id=cfg.desk_id,
+            is_admin=is_admin(),
+            on_open=lambda: threading.Thread(
+                target=open_app_window, args=(local_url, 0.0), daemon=True
+            ).start(),
+            on_copy_id=lambda: pyperclip.copy(cfg.desk_id),
+            on_elevate=_tray_elevate,
+            on_quit=request_shutdown,
+        )
+        tray.start()
+
     if not args.no_browser:
         threading.Thread(target=open_app_window, args=(local_url, 1.0), daemon=True).start()
 
-    app = create_app(cfg)
-    uvicorn.run(app, host=cfg.host, port=cfg.port, log_config=None)
+    app = create_app(cfg, on_shutdown_request=request_shutdown)
+    uv_config = uvicorn.Config(app, host=cfg.host, port=cfg.port, log_config=None)
+    server = uvicorn.Server(uv_config)
+    server_holder["server"] = server
+    try:
+        server.run()
+    finally:
+        if tray is not None:
+            tray.stop()
 
 
 if __name__ == "__main__":
