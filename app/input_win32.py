@@ -189,13 +189,19 @@ def _send_input(*inputs: INPUT) -> None:
     user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
 
 
-def _norm_to_virtual_abs(norm_x: float, norm_y: float, monitor_rect: dict) -> tuple[int, int]:
-    """Convert normalized [0..1] coordinates on monitor_rect to SendInput 0..65535 virtual desktop coords."""
+def norm_to_screen_px(norm_x: float, norm_y: float, monitor_rect: dict) -> tuple[int, int]:
+    """Convert normalized [0..1] coordinates on monitor_rect to Windows screen pixels."""
     nx = max(0.0, min(1.0, float(norm_x)))
     ny = max(0.0, min(1.0, float(norm_y)))
 
-    px = monitor_rect["left"] + nx * max(1, monitor_rect["width"] - 1)
-    py = monitor_rect["top"] + ny * max(1, monitor_rect["height"] - 1)
+    px = int(round(monitor_rect["left"] + nx * max(1, monitor_rect["width"] - 1)))
+    py = int(round(monitor_rect["top"] + ny * max(1, monitor_rect["height"] - 1)))
+    return px, py
+
+
+def _norm_to_virtual_abs(norm_x: float, norm_y: float, monitor_rect: dict) -> tuple[int, int]:
+    """Convert normalized [0..1] coordinates on monitor_rect to SendInput 0..65535 virtual desktop coords."""
+    px, py = norm_to_screen_px(norm_x, norm_y, monitor_rect)
 
     vx = user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
     vy = user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
