@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import time
 from ctypes import wintypes
 
 user32 = ctypes.windll.user32
@@ -174,13 +175,14 @@ ALIAS_TO_VK: dict[str, int] = {
     "esc": 0x1B,
     "tab": 0x09,
     "enter": 0x0D,
+    "space": 0x20,
+    "backspace": 0x08,
     "del": 0x2E,
     "delete": 0x2E,
     "prtsc": 0x2C,
-    "d": 0x44,
-    "l": 0x4C,
-    "r": 0x52,
-    "e": 0x45,
+    **{chr(c): c - 32 for c in range(ord("a"), ord("z") + 1)},
+    **{str(d): ord("0") + d for d in range(10)},
+    **{f"f{i}": 0x6F + i for i in range(1, 13)},
 }
 
 
@@ -332,11 +334,11 @@ def send_hotkey(keys: list[str]) -> None:
     if not vks:
         return
 
-    inputs: list[INPUT] = []
+    down_inputs: list[INPUT] = []
     for vk in vks:
         scan = user32.MapVirtualKeyW(vk, 0)
         flags = KEYEVENTF_EXTENDEDKEY if vk in EXTENDED_VKS else 0
-        inputs.append(
+        down_inputs.append(
             INPUT(
                 type=INPUT_KEYBOARD,
                 union=_INPUT_UNION(
@@ -344,10 +346,11 @@ def send_hotkey(keys: list[str]) -> None:
                 ),
             )
         )
+    up_inputs: list[INPUT] = []
     for vk in reversed(vks):
         scan = user32.MapVirtualKeyW(vk, 0)
         flags = KEYEVENTF_KEYUP | (KEYEVENTF_EXTENDEDKEY if vk in EXTENDED_VKS else 0)
-        inputs.append(
+        up_inputs.append(
             INPUT(
                 type=INPUT_KEYBOARD,
                 union=_INPUT_UNION(
@@ -355,4 +358,6 @@ def send_hotkey(keys: list[str]) -> None:
                 ),
             )
         )
-    _send_input(*inputs)
+    _send_input(*down_inputs)
+    time.sleep(0.05)
+    _send_input(*up_inputs)

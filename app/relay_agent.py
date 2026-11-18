@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
+import sys
 import time
 from typing import Any, Callable, Coroutine, Optional
 from urllib.parse import urlparse
@@ -15,6 +16,7 @@ import websockets
 from app.capture import ScreenCapturer
 from app.config import SgDeskConfig, normalize_desk_id
 from app.cursor_overlay import RemoteCursorOverlay
+from app.elevation import is_admin, request_self_elevation
 from app.input_win32 import (
     key_event,
     mouse_button,
@@ -46,12 +48,14 @@ class RelayAgent:
         on_auth_request: Callable[[str, str, str], Coroutine[Any, Any, str]],
         on_session_change: Callable[[], Coroutine[Any, Any, None]],
         cursor_overlay: Optional[RemoteCursorOverlay] = None,
+        on_shutdown_request: Optional[Callable[[], None]] = None,
     ) -> None:
         self.cfg = cfg
         self.capturer = capturer
         self.on_auth_request = on_auth_request
         self.on_session_change = on_session_change
         self.cursor_overlay = cursor_overlay
+        self.on_shutdown_request = on_shutdown_request
 
         self.status: str = "disabled"  # disabled | connecting | connected | error
         self.last_error: str = ""
@@ -299,6 +303,46 @@ class RelayAgent:
                         if mtype == "clipboard_get":
                             text = await asyncio.to_thread(pyperclip.paste)
                             await ws.send(json.dumps({"type": "clipboard", "text": text or ""}))
+                            continue
+                        if mtype == "request_elevation":
+                            if is_admin():
+                                await ws.send(
+                                    json.dumps(
+                                        {
+                                            "type": "elevation_status",
+                                            "elevated": True,
+                                            "restarting": False,
+                                            "message": "Host is already running as Administrator.",
+                                        }
+                                    )
+                                )
+                            else:
+                                ok = await asyncio.to_thread(request_self_elevation, sys.argv[1:])
+                                if ok:
+                                    await ws.send(
+                                        json.dumps(
+                                            {
+                                                "type": "elevation_status",
+                                                "elevated": False,
+                                                "restarting": True,
+                                                "message": "Elevation granted! Host is restarting as Administrator...",
+                                            }
+                                        )
+                                    )
+                                    await asyncio.sleep(0.35)
+                                    if self.on_shutdown_request:
+                                        self.on_shutdown_request()
+                                else:
+                                    await ws.send(
+                                        json.dumps(
+                                            {
+                                                "type": "elevation_status",
+                                                "elevated": False,
+                                                "restarting": False,
+                                                "message": "Elevation request was cancelled or denied.",
+                                            }
+                                        )
+                                    )
                             continue
 
                         if not (self.cfg.allow_input and sess["allow_input"]):

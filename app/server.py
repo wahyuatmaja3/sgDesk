@@ -10,7 +10,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import psutil
 import pyperclip
@@ -24,6 +24,7 @@ from app import __version__
 from app.capture import ScreenCapturer
 from app.config import SgDeskConfig, normalize_desk_id
 from app.cursor_overlay import RemoteCursorOverlay
+from app.elevation import is_admin, request_self_elevation
 from app.input_win32 import (
     key_event,
     mouse_button,
@@ -102,7 +103,10 @@ class DecisionBody(BaseModel):
     approve: bool
 
 
-def create_app(cfg: SgDeskConfig) -> FastAPI:
+def create_app(
+    cfg: SgDeskConfig,
+    on_shutdown_request: Optional[Callable[[], None]] = None,
+) -> FastAPI:
     capturer = ScreenCapturer()
     cursor_overlay = RemoteCursorOverlay()
     main_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -197,6 +201,7 @@ def create_app(cfg: SgDeskConfig) -> FastAPI:
         on_auth_request=handle_relay_auth_prompt,
         on_session_change=on_relay_session_change,
         cursor_overlay=cursor_overlay,
+        on_shutdown_request=on_shutdown_request,
     )
 
     def get_client_ip(request_or_ws: Request | WebSocket) -> str:
@@ -259,6 +264,7 @@ def create_app(cfg: SgDeskConfig) -> FastAPI:
             "version": __version__,
             "desk_id": cfg.desk_id,
             "hostname": cfg.hostname,
+            "is_admin": is_admin(),
             "port": cfg.port,
             "session_pin": cfg.session_pin,
             "has_unattended_password": bool(cfg.unattended_password),
@@ -339,6 +345,7 @@ def create_app(cfg: SgDeskConfig) -> FastAPI:
                 "desk_id": cfg.desk_id,
                 "hostname": cfg.hostname,
                 "is_local_host": local,
+                "is_admin": is_admin(),
                 "require_approval": cfg.require_approval,
             }
         )
@@ -395,6 +402,22 @@ def create_app(cfg: SgDeskConfig) -> FastAPI:
         new_pin = cfg.regenerate_pin()
         await broadcast_host_event({"type": "state", "data": build_host_state()})
         return JSONResponse({"session_pin": new_pin})
+
+    @app.post("/api/host/elevate")
+    async def host_elevate(request: Request) -> JSONResponse:
+        require_local_admin(request)
+        if is_admin():
+            return JSONResponse({"elevated": True, "restarting": False})
+        ok = await asyncio.to_thread(request_self_elevation, sys.argv[1:])
+        if ok:
+            async def _delayed_shutdown() -> None:
+                await asyncio.sleep(0.3)
+                if on_shutdown_request:
+                    on_shutdown_request()
+
+            asyncio.create_task(_delayed_shutdown())
+            return JSONResponse({"elevated": False, "restarting": True})
+        raise HTTPException(status_code=403, detail="UAC elevation was cancelled or denied.")
 
     @app.post("/api/host/settings")
     async def host_update_settings(body: HostSettingsBody, request: Request) -> JSONResponse:
@@ -663,6 +686,47 @@ def create_app(cfg: SgDeskConfig) -> FastAPI:
                 if mtype == "clipboard_get":
                     text = await asyncio.to_thread(pyperclip.paste)
                     await websocket.send_text(json.dumps({"type": "clipboard", "text": text or ""}))
+                    continue
+
+                if mtype == "request_elevation":
+                    if is_admin():
+                        await websocket.send_text(
+                            json.dumps(
+                                {
+                                    "type": "elevation_status",
+                                    "elevated": True,
+                                    "restarting": False,
+                                    "message": "Host is already running as Administrator.",
+                                }
+                            )
+                        )
+                    else:
+                        ok = await asyncio.to_thread(request_self_elevation, sys.argv[1:])
+                        if ok:
+                            await websocket.send_text(
+                                json.dumps(
+                                    {
+                                        "type": "elevation_status",
+                                        "elevated": False,
+                                        "restarting": True,
+                                        "message": "Elevation granted! Host is restarting as Administrator...",
+                                    }
+                                )
+                            )
+                            await asyncio.sleep(0.35)
+                            if on_shutdown_request:
+                                on_shutdown_request()
+                        else:
+                            await websocket.send_text(
+                                json.dumps(
+                                    {
+                                        "type": "elevation_status",
+                                        "elevated": False,
+                                        "restarting": False,
+                                        "message": "Elevation request was cancelled or denied.",
+                                    }
+                                )
+                            )
                     continue
 
                 if not (cfg.allow_input and sess.allow_input):
