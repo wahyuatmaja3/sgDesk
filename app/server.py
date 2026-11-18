@@ -23,7 +23,15 @@ from pydantic import BaseModel
 from app import __version__
 from app.capture import ScreenCapturer
 from app.config import SgDeskConfig, normalize_desk_id
-from app.input_win32 import key_event, mouse_button, mouse_wheel, move_mouse, send_hotkey
+from app.cursor_overlay import RemoteCursorOverlay
+from app.input_win32 import (
+    key_event,
+    mouse_button,
+    mouse_wheel,
+    move_mouse,
+    norm_to_screen_px,
+    send_hotkey,
+)
 from app.relay_agent import RelayAgent
 from app.tunnel import CloudflareTunnelManager
 
@@ -96,6 +104,7 @@ class DecisionBody(BaseModel):
 
 def create_app(cfg: SgDeskConfig) -> FastAPI:
     capturer = ScreenCapturer()
+    cursor_overlay = RemoteCursorOverlay()
     main_loop: Optional[asyncio.AbstractEventLoop] = None
 
     def _on_tunnel_update() -> None:
@@ -137,6 +146,7 @@ def create_app(cfg: SgDeskConfig) -> FastAPI:
         finally:
             relay_agent.stop()
             tunnel_mgr.stop_quick_tunnel()
+            cursor_overlay.stop()
 
     app = FastAPI(title="sgDesk", version=__version__, lifespan=lifespan)
     app.add_middleware(
@@ -186,6 +196,7 @@ def create_app(cfg: SgDeskConfig) -> FastAPI:
         capturer=capturer,
         on_auth_request=handle_relay_auth_prompt,
         on_session_change=on_relay_session_change,
+        cursor_overlay=cursor_overlay,
     )
 
     def get_client_ip(request_or_ws: Request | WebSocket) -> str:
@@ -625,6 +636,8 @@ def create_app(cfg: SgDeskConfig) -> FastAPI:
                 stop_event.set()
 
         streamer = asyncio.create_task(stream_loop())
+        pressed_buttons: set[str] = set()
+        last_norm_pos: Optional[tuple[float, float]] = None
 
         try:
             while not stop_event.is_set():
@@ -659,14 +672,31 @@ def create_app(cfg: SgDeskConfig) -> FastAPI:
                     await asyncio.to_thread(pyperclip.copy, str(msg.get("text", "")))
                 elif mtype == "mouse_move":
                     mon_rect = capturer.get_monitor_rect(sess.monitor)
-                    await asyncio.to_thread(move_mouse, msg["x"], msg["y"], mon_rect)
+                    last_norm_pos = (msg["x"], msg["y"])
+                    px, py = norm_to_screen_px(msg["x"], msg["y"], mon_rect)
+                    cursor_overlay.update_cursor(session_id, sess.client_name, px, py)
+                    if pressed_buttons:
+                        await asyncio.to_thread(move_mouse, msg["x"], msg["y"], mon_rect)
                 elif mtype in ("mouse_down", "mouse_up"):
                     mon_rect = capturer.get_monitor_rect(sess.monitor)
+                    btn = str(msg.get("button", "left"))
                     action = "down" if mtype == "mouse_down" else "up"
+                    if action == "down":
+                        pressed_buttons.add(btn)
+                    else:
+                        pressed_buttons.discard(btn)
+                    last_norm_pos = (msg["x"], msg["y"])
+                    px, py = norm_to_screen_px(msg["x"], msg["y"], mon_rect)
+                    cursor_overlay.update_cursor(session_id, sess.client_name, px, py)
                     await asyncio.to_thread(
-                        mouse_button, msg.get("button", "left"), action, msg["x"], msg["y"], mon_rect
+                        mouse_button, btn, action, msg["x"], msg["y"], mon_rect
                     )
                 elif mtype == "wheel":
+                    if last_norm_pos is not None:
+                        mon_rect = capturer.get_monitor_rect(sess.monitor)
+                        await asyncio.to_thread(
+                            move_mouse, last_norm_pos[0], last_norm_pos[1], mon_rect
+                        )
                     await asyncio.to_thread(
                         mouse_wheel, float(msg.get("dx", 0)), float(msg.get("dy", 0))
                     )
@@ -685,6 +715,7 @@ def create_app(cfg: SgDeskConfig) -> FastAPI:
         finally:
             stop_event.set()
             streamer.cancel()
+            cursor_overlay.remove_cursor(session_id)
             active_sessions.pop(session_id, None)
             await broadcast_host_event({"type": "state", "data": build_host_state()})
 

@@ -14,7 +14,15 @@ import websockets
 
 from app.capture import ScreenCapturer
 from app.config import SgDeskConfig, normalize_desk_id
-from app.input_win32 import key_event, mouse_button, mouse_wheel, move_mouse, send_hotkey
+from app.cursor_overlay import RemoteCursorOverlay
+from app.input_win32 import (
+    key_event,
+    mouse_button,
+    mouse_wheel,
+    move_mouse,
+    norm_to_screen_px,
+    send_hotkey,
+)
 
 
 def _to_ws_base(http_url: str) -> str:
@@ -37,11 +45,13 @@ class RelayAgent:
         capturer: ScreenCapturer,
         on_auth_request: Callable[[str, str, str], Coroutine[Any, Any, str]],
         on_session_change: Callable[[], Coroutine[Any, Any, None]],
+        cursor_overlay: Optional[RemoteCursorOverlay] = None,
     ) -> None:
         self.cfg = cfg
         self.capturer = capturer
         self.on_auth_request = on_auth_request
         self.on_session_change = on_session_change
+        self.cursor_overlay = cursor_overlay
 
         self.status: str = "disabled"  # disabled | connecting | connected | error
         self.last_error: str = ""
@@ -186,6 +196,8 @@ class RelayAgent:
         await self.on_session_change()
 
         stop_stream = asyncio.Event()
+        pressed_buttons: set[str] = set()
+        last_norm_pos: Optional[tuple[float, float]] = None
 
         try:
             async with websockets.connect(
@@ -296,19 +308,38 @@ class RelayAgent:
                             await asyncio.to_thread(pyperclip.copy, str(msg.get("text", "")))
                         elif mtype == "mouse_move":
                             mon_rect = self.capturer.get_monitor_rect(sess["monitor"])
-                            await asyncio.to_thread(move_mouse, msg["x"], msg["y"], mon_rect)
+                            last_norm_pos = (msg["x"], msg["y"])
+                            if self.cursor_overlay:
+                                px, py = norm_to_screen_px(msg["x"], msg["y"], mon_rect)
+                                self.cursor_overlay.update_cursor(session_id, client_name, px, py)
+                            if pressed_buttons:
+                                await asyncio.to_thread(move_mouse, msg["x"], msg["y"], mon_rect)
                         elif mtype in ("mouse_down", "mouse_up"):
                             mon_rect = self.capturer.get_monitor_rect(sess["monitor"])
+                            btn = str(msg.get("button", "left"))
                             action = "down" if mtype == "mouse_down" else "up"
+                            if action == "down":
+                                pressed_buttons.add(btn)
+                            else:
+                                pressed_buttons.discard(btn)
+                            last_norm_pos = (msg["x"], msg["y"])
+                            if self.cursor_overlay:
+                                px, py = norm_to_screen_px(msg["x"], msg["y"], mon_rect)
+                                self.cursor_overlay.update_cursor(session_id, client_name, px, py)
                             await asyncio.to_thread(
                                 mouse_button,
-                                msg.get("button", "left"),
+                                btn,
                                 action,
                                 msg["x"],
                                 msg["y"],
                                 mon_rect,
                             )
                         elif mtype == "wheel":
+                            if last_norm_pos is not None:
+                                mon_rect = self.capturer.get_monitor_rect(sess["monitor"])
+                                await asyncio.to_thread(
+                                    move_mouse, last_norm_pos[0], last_norm_pos[1], mon_rect
+                                )
                             await asyncio.to_thread(
                                 mouse_wheel, float(msg.get("dx", 0)), float(msg.get("dy", 0))
                             )
@@ -326,5 +357,7 @@ class RelayAgent:
         except Exception:
             pass
         finally:
+            if self.cursor_overlay:
+                self.cursor_overlay.remove_cursor(session_id)
             self.relay_sessions.pop(session_id, None)
             await self.on_session_change()
