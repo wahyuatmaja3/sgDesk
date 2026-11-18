@@ -150,6 +150,14 @@
             <div class="small muted" id="pw-status-text">Not set</div>
           </div>
 
+          <div class="form-row" style="margin-top:12px;">
+            <label class="label">Administrator Privileges</label>
+            <div class="input-group">
+              <button class="btn btn-secondary btn-sm" id="btn-host-elevate">🛡 Run as Administrator</button>
+              <span class="small muted" id="admin-status-text" style="align-self:center;">Standard User</span>
+            </div>
+          </div>
+
           <div class="sessions-section">
             <div class="label" style="margin-bottom:6px;">Active Sessions</div>
             <div id="active-sessions-list" class="stack muted small">No active remote sessions</div>
@@ -249,10 +257,13 @@
               <button data-keys="ctrl,shift,esc">Task Manager (Ctrl+Shift+Esc)</button>
               <button data-keys="alt,tab">Alt + Tab</button>
               <button data-keys="win,d">Show Desktop (Win+D)</button>
+              <button data-keys="win,r">Run (Win+R)</button>
+              <button data-keys="win,e">File Explorer (Win+E)</button>
               <button data-keys="win,l">Lock Screen (Win+L)</button>
               <button data-keys="prtsc">Print Screen</button>
             </div>
           </div>
+          <button class="btn btn-secondary btn-sm" id="btn-elevate" title="Request Administrator Elevation on Remote PC">🛡 Elevate</button>
           <button class="btn btn-secondary btn-sm" id="btn-clipboard">Clipboard</button>
           <button class="btn btn-secondary btn-sm" id="btn-fullscreen">Fullscreen</button>
           <button class="btn btn-primary btn-sm" id="btn-disconnect">Disconnect</button>

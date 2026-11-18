@@ -48,14 +48,44 @@ class SgDeskViewer {
       this.disconnect();
     });
 
-    document.getElementById("btn-fullscreen").addEventListener("click", () => {
+    document.getElementById("btn-fullscreen").addEventListener("click", async () => {
       const shell = document.getElementById("viewer-view");
       if (!document.fullscreenElement) {
-        shell.requestFullscreen?.();
+        await shell.requestFullscreen?.();
+        try {
+          await navigator.keyboard?.lock?.(["AltLeft", "AltRight", "MetaLeft", "MetaRight", "Tab"]);
+        } catch {
+          // Keyboard Lock not supported in this browser
+        }
       } else {
+        try {
+          navigator.keyboard?.unlock?.();
+        } catch {
+          // Ignore
+        }
         document.exitFullscreen?.();
       }
     });
+
+    document.addEventListener("fullscreenchange", () => {
+      if (!document.fullscreenElement) {
+        try {
+          navigator.keyboard?.unlock?.();
+        } catch {
+          // Ignore
+        }
+      }
+    });
+
+    const btnElevate = document.getElementById("btn-elevate");
+    if (btnElevate) {
+      btnElevate.addEventListener("click", () => {
+        if (!this.ws) return;
+        btnElevate.disabled = true;
+        btnElevate.textContent = "🛡 Elevating...";
+        this._send({ type: "request_elevation" });
+      });
+    }
 
     // Hotkeys dropdown
     const btnHotkeys = document.getElementById("btn-hotkeys");
@@ -263,6 +293,15 @@ class SgDeskViewer {
       this.statRtt.textContent = `${rtt} ms`;
     } else if (msg.type === "input_permission") {
       this.allowInput = Boolean(msg.allow_input);
+    } else if (msg.type === "elevation_status") {
+      const btnElevate = document.getElementById("btn-elevate");
+      if (btnElevate) {
+        btnElevate.disabled = Boolean(msg.elevated);
+        btnElevate.textContent = msg.elevated ? "🛡 Admin" : "🛡 Elevate";
+      }
+      if (msg.message) {
+        alert(msg.message);
+      }
     } else if (msg.type === "clipboard") {
       this.clipboardText.value = msg.text || "";
     }

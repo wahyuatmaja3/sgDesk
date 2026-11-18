@@ -63,6 +63,22 @@
       state.system_stats.ram_percent
     )}%`;
 
+    const btnHostElevate = document.getElementById("btn-host-elevate");
+    const adminStatusText = document.getElementById("admin-status-text");
+    if (btnHostElevate && adminStatusText) {
+      if (state.is_admin) {
+        btnHostElevate.disabled = true;
+        btnHostElevate.textContent = "🛡 Running as Admin";
+        adminStatusText.textContent = "Administrator (UAC elevated)";
+        modeBadge.textContent = "Ready · Admin";
+      } else {
+        btnHostElevate.disabled = false;
+        btnHostElevate.textContent = "🛡 Run as Administrator";
+        adminStatusText.textContent = "Standard User";
+        modeBadge.textContent = "Ready";
+      }
+    }
+
     // Relay status
     const relayBadge = document.getElementById("relay-status-badge");
     const relayText = document.getElementById("relay-status-text");
@@ -280,6 +296,23 @@
       btnToggleSettings.addEventListener("click", () => {
         const isHidden = settingsDrawer.style.display === "none";
         settingsDrawer.style.display = isHidden ? "grid" : "none";
+      });
+    }
+
+    const btnHostElevate = document.getElementById("btn-host-elevate");
+    if (btnHostElevate) {
+      btnHostElevate.addEventListener("click", async () => {
+        btnHostElevate.disabled = true;
+        btnHostElevate.textContent = "🛡 Waiting for UAC...";
+        try {
+          const res = await hostFetch("/api/host/elevate", { method: "POST" });
+          if (res.restarting) {
+            btnHostElevate.textContent = "🛡 Restarting as Admin...";
+          }
+        } catch (err) {
+          alert(err.message || "Elevation cancelled.");
+          if (hostState) renderHostState(hostState);
+        }
       });
     }
 
