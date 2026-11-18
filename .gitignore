@@ -1,0 +1,11 @@
+.venv/
+build/
+dist/
+__pycache__/
+*.py[cod]
+*$py.class
+bin/cloudflared.exe
+sgdesk_config.json
+*.log
+.DS_Store
+Thumbs.db
